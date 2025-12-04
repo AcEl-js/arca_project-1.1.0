@@ -1,0 +1,11 @@
+crewai[tools,agentops]==0.28.8
+agentops
+fastapi
+uvicorn[standard]
+python-dotenv
+chromadb
+sentence-transformers
+transformers
+scikit-learn
+openpyxl
+requests

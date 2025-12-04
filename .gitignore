@@ -1,0 +1,120 @@
+# -------------------------
+# PYTHON
+# -------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+*.pkl
+*.egg-info/
+*.egg
+.Python
+pythonenv*
+env/
+venv/
+ENV/
+.venv/
+
+# Byte-compiled / optimized
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# C extensions
+*.so
+
+
+# -------------------------
+# ENVIRONMENT & SECRETS
+# -------------------------
+.env
+.env.*
+.secret
+*.key
+*.pem
+
+
+# -------------------------
+# FASTAPI / UVICORN
+# -------------------------
+uvicorn.log
+*.sqlite3
+instance/
+
+
+# -------------------------
+# CHROMA DB STORAGE
+# -------------------------
+chroma_db/
+chroma/
+chromadb/
+*.chroma
+*.bin
+*.json
+
+
+# -------------------------
+# DATASETS & DOCUMENTS
+# -------------------------
+data/*.pdf
+data/*.txt
+data/*.md
+data/policies/*
+!data/policies/.gitkeep
+
+
+# -------------------------
+# LOGS & CACHE
+# -------------------------
+*.log
+logs/
+.cache/
+_cache/
+.tmp/
+temp/
+tmp/
+
+
+# -------------------------
+# MODEL DOWNLOADS
+# -------------------------
+sentence_transformers/
+models/
+model_cache/
+huggingface/
+hf_cache/
+transformers_cache/
+
+
+# -------------------------
+# EDITORS / OS FILES
+# -------------------------
+# VSCode
+.vscode/
+.history/
+
+# PyCharm / JetBrains
+.idea/
+
+# Mac / Windows
+.DS_Store
+Thumbs.db
+
+# Linux
+*.swp
+*.swo
+
+# Node junk (if any frontend added later)
+node_modules/
+dist/
+build/
+
+
+# -------------------------
+# TEST OUTPUT / TEMP FILES
+# -------------------------
+tests/output/
+*.test.json
+*.tmp.json
