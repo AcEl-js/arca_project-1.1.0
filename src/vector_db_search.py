@@ -1,125 +1,109 @@
 import os
-import glob
-import pathlib
-import argparse
-import sys
-from chromadb import Client
-from chromadb.config import Settings
+import chromadb
 from chromadb.utils import embedding_functions
-from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
+from dotenv import load_dotenv
+import uuid
 
+from src.utils import CHUNK_SIZE, CHUNK_OVERLAP  # 400 / 50 as required
+
+load_dotenv()
+
+# Use environment variable or default to ./chroma_db
 DB_DIR = os.getenv("CHROMA_DIR", "./chroma_db")
-MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Singleton clients
+_client = None
+_collection = None
+
+
+def get_db_collection():
+    global _client, _collection
+    if _collection is None:
+        # 1. Initialize Persistent Client
+        _client = chromadb.PersistentClient(path=DB_DIR)
+
+        # 2. Embedding: all-MiniLM-L6-v2 (free, local-friendly)
+        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+
+        # 3. Get or Create Collection
+        _collection = _client.get_or_create_collection(
+            name="arca_policies",
+            embedding_function=ef,
+        )
+    return _collection
 
 
 class VectorDB:
-    def __init__(self, persist_directory: str = DB_DIR):
-        self.persist_directory = persist_directory
+    def __init__(self):
+        self.collection = get_db_collection()
 
-        # NEW Chroma client API
-        self.client = Client(
-            Settings(
-                is_persistent=True,
-                persist_directory=persist_directory,
-            )
+        # ARCA-compliant chunking: 400 size / 50 overlap
+        try:
+            # New style
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+        except ImportError:
+            # Fallback (older langchain)
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,        # 400
+            chunk_overlap=CHUNK_OVERLAP,  # 50
         )
 
-        # SentenceTransformers embedding wrapper
-        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=MODEL_NAME
+    def add_document(self, text: str, filename: str, user_id: str):
+        """
+        Splits text and saves it with user_id metadata.
+        """
+        chunks = self.text_splitter.split_text(text)
+
+        # Generate IDs: "user_123-uuid"
+        ids = [f"{user_id}-{uuid.uuid4()}" for _ in range(len(chunks))]
+
+        # Tag Metadata: This is what allows User Isolation (SaaS extension)
+        metadatas = [{"source": filename, "user_id": user_id} for _ in range(len(chunks))]
+
+        self.collection.add(
+            documents=chunks,
+            metadatas=metadatas,
+            ids=ids,
         )
+        print(f"DEBUG: Added {len(chunks)} chunks for user '{user_id}' from '{filename}'")
 
-        # Load or create collection
-        self._create_or_load_collection()
+    def search(self, query: str, user_id: str, top_k: int = 5):
+        """
+        Searches User Data first, then falls back to Default Data.
+        This is the engine behind the vector_db_search tool.
+        """
+        print(f"DEBUG: Searching for user '{user_id}'...")
 
-    def _create_or_load_collection(self):
-        collections = [c.name for c in self.client.list_collections()]
-        if "arca_policies" in collections:
-            self.collection = self.client.get_collection("arca_policies")
-        else:
-            self.collection = self.client.create_collection(
-                name="arca_policies",
-                embedding_function=self.embedding_function
-            )
-
-    def build_from_folder(self, folder: str):
-        files = glob.glob(os.path.join(folder, "**/*"), recursive=True)
-
-        docs = []
-        ids = []
-        metas = []
-
-        for f in files:
-            if not any(f.endswith(ext) for ext in (".md", ".txt")):
-                continue
-
-            with open(f, "r", encoding="utf-8") as fh:
-                text = fh.read()
-
-            start, idx = 0, 0
-            while start < len(text):
-                chunk = text[start:start+CHUNK_SIZE]
-                chunk_id = f"{pathlib.Path(f).stem}-chunk-{idx}"
-
-                docs.append(chunk)
-                ids.append(chunk_id)
-                metas.append({"source": f})
-
-                start += CHUNK_SIZE - CHUNK_OVERLAP
-                idx += 1
-
-        if docs:
-            self.collection.add(
-                ids=ids,
-                documents=docs,
-                metadatas=metas
-            )
-           
-
-        return len(docs)
-
-    def search(self, query: str, top_k: int = 5):
+        # 1. Try User's Private Data
         results = self.collection.query(
             query_texts=[query],
-            n_results=top_k
+            n_results=top_k,
+            where={"user_id": user_id},
         )
-        ids = results["ids"][0]
-        docs = results["documents"][0]
-        return list(zip(ids, docs))
 
-# ---------------- CLI ----------------
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ARCA Vector DB Utility")
-    parser.add_argument("--build", "-b", help="Folder of policies to index")
-    parser.add_argument("--list", action="store_true", help="List all stored chunks")
-    parser.add_argument("--clean", action="store_true", help="Delete DB directory")
-    args = parser.parse_args()
+        found_ids = results["ids"][0] if results["ids"] else []
 
-    db = VectorDB()
+        # 2. Fallback to 'default' corpus
+        if not found_ids and user_id != "default":
+            print(f"DEBUG: User '{user_id}' has no matching policies. Falling back to 'default'.")
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=top_k,
+                where={"user_id": "default"},
+            )
 
-    if args.clean:
-        db.clean_db()
-        sys.exit(0)
-
-    if args.list:
-        chunks = db.list_chunks()
-        for cid, text in chunks:
-            print(f"ID: {cid}\n{text[:200]}\n{'-'*40}")
-        sys.exit(0)
-
-    if args.build:
-        count = db.build_from_folder(args.build)
-        print(f"Indexed {count} chunks.")
-        sys.exit(0)
-
-    print("No arguments provided. Use --build, --list, or --clean.")
+        if results["ids"]:
+            return list(zip(results["ids"][0], results["documents"][0]))
+        return []
 
 
-# ---------------- Singleton for ARCA Agents ----------------
-_db_instance = None
+# Singleton Instance
+_db_instance = VectorDB()
+
 
 def get_db():
-    global _db_instance
-    if _db_instance is None:
-        _db_instance = VectorDB()
     return _db_instance
