@@ -1,11 +1,8 @@
 import os
 import chromadb
-from chromadb.utils import embedding_functions
+import google.generativeai as genai  # Lightweight direct import
 from dotenv import load_dotenv
 import uuid
-
-# 1. Import Google's Embedding Function
-from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
 
 from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
 
@@ -23,7 +20,37 @@ if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_
         "Please set: CHROMA_API_KEY, CHROMA_TENANT_ID, CHROMA_DB, and GEMINI_API_KEY\n"
     )
 
-# 2. Initialize Chroma Cloud Client
+# --- 1. Define Lightweight Embedding Function ---
+# This replaces the heavy "chromadb.utils.embedding_functions" 
+# to save ~150MB of space on Vercel.
+class LightweightGeminiEmbeddingFunction:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        genai.configure(api_key=api_key)
+
+    def __call__(self, input):
+        # ChromaDB expects a list of text strings and requires a list of embedding arrays back.
+        if not input:
+            return []
+        
+        # You can use "models/text-embedding-004" or "models/embedding-001"
+        model = "models/text-embedding-004"
+        
+        embeddings = []
+        # Loop through inputs (simple batching)
+        for text in input:
+            # Generate embedding
+            result = genai.embed_content(
+                model=model,
+                content=text,
+                task_type="retrieval_document"
+            )
+            embeddings.append(result['embedding'])
+            
+        return embeddings
+
+# --- 2. Initialize Chroma Cloud Client ---
+# Note: Ensure you are using 'chromadb-client' in requirements.txt
 client = chromadb.CloudClient(
     api_key=CHROMA_API_KEY,
     tenant=CHROMA_TENANT,
@@ -37,19 +64,15 @@ def get_db_collection():
     global _collection
 
     if _collection is None:
-        # 3. SWITCHED: Use Google Gemini Embeddings (Lightweight)
-        # instead of SentenceTransformers (Heavy)
-        ef = GoogleGenerativeAiEmbeddingFunction(
-            api_key=GEMINI_API_KEY,
-            task_type="RETRIEVAL_DOCUMENT"
-        )
+        # Instantiate our custom lightweight class
+        ef = LightweightGeminiEmbeddingFunction(api_key=GEMINI_API_KEY)
 
         _collection = client.get_or_create_collection(
             name="arca_policies",
             embedding_function=ef,
         )
 
-        print("🔗 Chroma Cloud Collection Connected (Gemini Embeddings) ✓")
+        print("🔗 Chroma Cloud Collection Connected (Lightweight Gemini) ✓")
 
     return _collection
 
@@ -58,6 +81,7 @@ class VectorDB:
     def __init__(self):
         self.collection = get_db_collection()
 
+        # Import splitter inside the class to avoid top-level overhead if not needed immediately
         try:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
         except ImportError:
@@ -80,7 +104,6 @@ class VectorDB:
         )
         print(f"☁️ Added {len(chunks)} chunks → user={user_id}, file={filename}")
 
-    # FIXED: "def def search" typo corrected here
     def search(self, query: str, user_id: str, top_k: int = 5):
         print(f"🔍 Searching query='{query}' user='{user_id}'")
 
@@ -92,6 +115,7 @@ class VectorDB:
 
         docs = results.get("documents", [[]])[0]
 
+        # Fallback to default corpus if user has no data
         if (not docs or len(docs) == 0) and user_id != "default":
             print("⚠️ No user match → fallback to default corpus")
             results = self.collection.query(
