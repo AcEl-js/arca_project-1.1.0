@@ -5,6 +5,5 @@ python-dotenv
 crewai==0.41.1
 langchain-text-splitters
 pypdf
-chromadb>=0.5.10,<0.6.0
 sentence-transformers
 typing-extensions
