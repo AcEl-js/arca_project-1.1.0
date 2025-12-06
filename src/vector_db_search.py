@@ -4,7 +4,7 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 import uuid
 
-from src.utils import CHUNK_SIZE, CHUNK_OVERLAP  # keep existing values
+from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
 
 load_dotenv()
 
@@ -22,7 +22,7 @@ if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE:
         "  CHROMA_DB\n"
     )
 
-# 1️⃣ Initialize Chroma Cloud Client (NO Settings() needed)
+# 1️⃣ Initialize Chroma Cloud Client
 client = chromadb.CloudClient(
     api_key=CHROMA_API_KEY,
     tenant=CHROMA_TENANT,
@@ -82,7 +82,8 @@ class VectorDB:
 
         print(f"☁️ Added {len(chunks)} chunks → user={user_id}, file={filename}")
 
-    def def search(self, query: str, user_id: str, top_k: int = 5):
+    # FIXED: Removed extra 'def'
+    def search(self, query: str, user_id: str, top_k: int = 5):
         print(f"🔍 Searching query='{query}' user='{user_id}'")
 
         results = self.collection.query(
@@ -108,7 +109,6 @@ class VectorDB:
             return []
 
         return list(zip(results["ids"][0], docs))
-
 
 
 # singleton instance

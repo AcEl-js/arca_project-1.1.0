@@ -1,0 +1,20 @@
+# .vercelignore
+.vercel
+.git
+.ds_store
+__pycache__
+*.pyc
+*.pyo
+
+# Ignore Virtual Environment (Critical)
+venv
+.venv
+env
+
+# Ignore Local Database & Cache
+chroma_db
+chroma_data
+.cache
+
+# Ignore Environment Variables file (Security)
+.env
