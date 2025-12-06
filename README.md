@@ -219,3 +219,4 @@ Ce système permet à une entreprise de :
 # 🧑‍🔧 Auteur & Contact  
 Projet réalisé par **[Votre nom]**  
 Soutenance ARCA 2025  
+# arca_project-1.1.0
