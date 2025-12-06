@@ -82,31 +82,33 @@ class VectorDB:
 
         print(f"☁️ Added {len(chunks)} chunks → user={user_id}, file={filename}")
 
-    def search(self, query: str, user_id: str, top_k: int = 5):
+    def def search(self, query: str, user_id: str, top_k: int = 5):
         print(f"🔍 Searching query='{query}' user='{user_id}'")
 
         results = self.collection.query(
             query_texts=[query],
             n_results=top_k,
-            where={"user_id": user_id},
+            where={"user_id": {"$eq": user_id}}
         )
 
-        found_docs = results.get("documents", [[]])[0]
+        docs = results.get("documents", [[]])[0]
 
-        # fallback to default policies
-        if not found_docs and user_id != "default":
+        if (not docs or len(docs) == 0) and user_id != "default":
             print("⚠️ No user match → fallback to default corpus")
             results = self.collection.query(
                 query_texts=[query],
                 n_results=top_k,
-                where={"user_id": "default"},
+                where={"user_id": {"$eq": "default"}}
             )
 
-        if not results.get("ids", [[ ]])[0]:
+        docs = results.get("documents", [[]])[0]
+
+        if not docs or len(docs) == 0:
             print("❌ No match found")
             return []
 
-        return list(zip(results["ids"][0], results["documents"][0]))
+        return list(zip(results["ids"][0], docs))
+
 
 
 # singleton instance
