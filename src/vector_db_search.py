@@ -4,7 +4,7 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 import uuid
 
-# Import the Google Embedding Function
+# 1. Import Google's Embedding Function
 from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
 
 from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
@@ -15,7 +15,7 @@ load_dotenv()
 CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
 CHROMA_TENANT = os.getenv("CHROMA_TENANT_ID")
 CHROMA_DATABASE = os.getenv("CHROMA_DB")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Ensure this is in your .env
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_API_KEY:
     raise Exception(
@@ -23,7 +23,7 @@ if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_
         "Please set: CHROMA_API_KEY, CHROMA_TENANT_ID, CHROMA_DB, and GEMINI_API_KEY\n"
     )
 
-# 1️⃣ Initialize Chroma Cloud Client
+# 2. Initialize Chroma Cloud Client
 client = chromadb.CloudClient(
     api_key=CHROMA_API_KEY,
     tenant=CHROMA_TENANT,
@@ -37,11 +37,11 @@ def get_db_collection():
     global _collection
 
     if _collection is None:
-        # SWITCHED: Use Google Gemini Embeddings (Lightweight)
+        # 3. SWITCHED: Use Google Gemini Embeddings (Lightweight)
         # instead of SentenceTransformers (Heavy)
         ef = GoogleGenerativeAiEmbeddingFunction(
             api_key=GEMINI_API_KEY,
-            task_type="RETRIEVAL_DOCUMENT" # Optimizes for storage
+            task_type="RETRIEVAL_DOCUMENT"
         )
 
         _collection = client.get_or_create_collection(
@@ -80,7 +80,7 @@ class VectorDB:
         )
         print(f"☁️ Added {len(chunks)} chunks → user={user_id}, file={filename}")
 
-    # FIXED: The syntax error (removed extra 'def')
+    # FIXED: "def def search" typo corrected here
     def search(self, query: str, user_id: str, top_k: int = 5):
         print(f"🔍 Searching query='{query}' user='{user_id}'")
 
