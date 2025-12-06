@@ -33,11 +33,16 @@ app = FastAPI(title="ARCA SaaS API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all since deployed on cloud
+    allow_origins=[
+        "http://localhost:3000", 
+        "https://arca-project-frontend.vercel.app",  # change this to your deployed frontend
+        "*"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
 
 app.add_middleware(UploadLimitMiddleware)
 
