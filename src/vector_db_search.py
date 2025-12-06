@@ -4,6 +4,9 @@ from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
 import uuid
 
+# Import the Google Embedding Function
+from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
+
 from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
 
 load_dotenv()
@@ -12,14 +15,12 @@ load_dotenv()
 CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
 CHROMA_TENANT = os.getenv("CHROMA_TENANT_ID")
 CHROMA_DATABASE = os.getenv("CHROMA_DB")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # Ensure this is in your .env
 
-if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE:
+if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_API_KEY:
     raise Exception(
-        "\n❌ Missing Chroma Cloud ENV config\n"
-        "Please set:\n"
-        "  CHROMA_API_KEY\n"
-        "  CHROMA_TENANT_ID\n"
-        "  CHROMA_DB\n"
+        "\n❌ Missing Environment Variables\n"
+        "Please set: CHROMA_API_KEY, CHROMA_TENANT_ID, CHROMA_DB, and GEMINI_API_KEY\n"
     )
 
 # 1️⃣ Initialize Chroma Cloud Client
@@ -32,13 +33,15 @@ client = chromadb.CloudClient(
 # global collection cache
 _collection = None
 
-
 def get_db_collection():
     global _collection
 
     if _collection is None:
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+        # SWITCHED: Use Google Gemini Embeddings (Lightweight)
+        # instead of SentenceTransformers (Heavy)
+        ef = GoogleGenerativeAiEmbeddingFunction(
+            api_key=GEMINI_API_KEY,
+            task_type="RETRIEVAL_DOCUMENT" # Optimizes for storage
         )
 
         _collection = client.get_or_create_collection(
@@ -46,7 +49,7 @@ def get_db_collection():
             embedding_function=ef,
         )
 
-        print("🔗 Chroma Cloud Collection Connected ✓")
+        print("🔗 Chroma Cloud Collection Connected (Gemini Embeddings) ✓")
 
     return _collection
 
@@ -67,22 +70,17 @@ class VectorDB:
 
     def add_document(self, text: str, filename: str, user_id: str):
         chunks = self.text_splitter.split_text(text)
-
         ids = [f"{user_id}-{uuid.uuid4()}" for _ in chunks]
-
-        metadatas = [
-            {"source": filename, "user_id": user_id} for _ in chunks
-        ]
+        metadatas = [{"source": filename, "user_id": user_id} for _ in chunks]
 
         self.collection.add(
             documents=chunks,
             metadatas=metadatas,
             ids=ids,
         )
-
         print(f"☁️ Added {len(chunks)} chunks → user={user_id}, file={filename}")
 
-    # FIXED: Removed extra 'def'
+    # FIXED: The syntax error (removed extra 'def')
     def search(self, query: str, user_id: str, top_k: int = 5):
         print(f"🔍 Searching query='{query}' user='{user_id}'")
 
@@ -101,8 +99,7 @@ class VectorDB:
                 n_results=top_k,
                 where={"user_id": {"$eq": "default"}}
             )
-
-        docs = results.get("documents", [[]])[0]
+            docs = results.get("documents", [[]])[0]
 
         if not docs or len(docs) == 0:
             print("❌ No match found")
@@ -110,10 +107,8 @@ class VectorDB:
 
         return list(zip(results["ids"][0], docs))
 
-
 # singleton instance
 _db_instance = VectorDB()
-
 
 def get_db():
     return _db_instance

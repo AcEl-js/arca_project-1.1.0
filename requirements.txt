@@ -5,5 +5,6 @@ python-dotenv
 crewai
 langchain-text-splitters
 pypdf
-sentence-transformers
+google-generativeai
+chromadb>=0.5.10
 typing-extensions
