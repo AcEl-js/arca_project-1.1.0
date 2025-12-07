@@ -21,6 +21,52 @@ if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_
 
 
 # ------------------------------
+# Simple Text Splitter (Replaces LangChain)
+# ------------------------------
+class SimpleTextSplitter:
+    def __init__(self, chunk_size=1000, chunk_overlap=200):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+    
+    def split_text(self, text: str) -> list:
+        """Split text into overlapping chunks"""
+        if not text:
+            return []
+        
+        chunks = []
+        start = 0
+        text_len = len(text)
+        
+        while start < text_len:
+            end = min(start + self.chunk_size, text_len)
+            
+            # Try to break at natural boundaries if not at end
+            if end < text_len:
+                # Look for paragraph break
+                last_para = text.rfind('\n\n', start, end)
+                if last_para > start:
+                    end = last_para + 2
+                else:
+                    # Look for sentence break
+                    for sep in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                        last_sent = text.rfind(sep, start, end)
+                        if last_sent > start:
+                            end = last_sent + len(sep)
+                            break
+            
+            chunk = text[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            
+            # Move forward with overlap
+            if end >= text_len:
+                break
+            start = end - self.chunk_overlap
+        
+        return chunks
+
+
+# ------------------------------
 # Create Gemini Embedding Wrapper
 # ------------------------------
 class LightweightGeminiEmbeddingFunction:
@@ -28,16 +74,16 @@ class LightweightGeminiEmbeddingFunction:
         self.api_key = api_key
         genai.configure(api_key=api_key)
 
-    # REQUIRED BY CHROMADB
-    def name(self):
-        return "gemini_lightweight_v1"  # any unique name works
-
-    def __call__(self, input_list):
-        if not input_list:
+    def __call__(self, input):
+        """
+        IMPORTANT: Parameter MUST be named 'input' for ChromaDB compatibility
+        ChromaDB passes a list of strings to embed
+        """
+        if not input:
             return []
 
         results = []
-        for text in input_list:
+        for text in input:
             response = genai.embed_content(
                 model="models/text-embedding-004",
                 content=text,
@@ -63,15 +109,14 @@ def get_db_collection():
     global _collection
 
     if _collection is None:
-
         ef = LightweightGeminiEmbeddingFunction(GEMINI_API_KEY)
 
         _collection = client.get_or_create_collection(
-            name="arca_policies_gemini",  # MUST BE UNIQUE
+            name="arca_policies_gemini",
             embedding_function=ef,
         )
 
-        print("🔗 Chroma Cloud Connected (Gemini Embeddings) ✓")
+        print("🔗 Chroma Cloud Connected (Gemini Embeddings) ✔")
 
     return _collection
 
@@ -82,13 +127,8 @@ def get_db_collection():
 class VectorDB:
     def __init__(self):
         self.collection = get_db_collection()
-
-        try:
-            from langchain_text_splitters import RecursiveCharacterTextSplitter
-        except ImportError:
-            from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-        self.text_splitter = RecursiveCharacterTextSplitter(
+        # Use our simple text splitter instead of LangChain
+        self.text_splitter = SimpleTextSplitter(
             chunk_size=CHUNK_SIZE,
             chunk_overlap=CHUNK_OVERLAP,
         )
@@ -107,7 +147,7 @@ class VectorDB:
         print(f"☁️ Added {len(chunks)} chunks for user={user_id}, file={filename}")
 
     def search(self, query: str, user_id: str, top_k: int = 5):
-        print(f"🔍 Searching '{query}' for user '{user_id}'")
+        print(f"🔍 Searching '{query[:50]}...' for user '{user_id}'")
 
         results = self.collection.query(
             query_texts=[query],
