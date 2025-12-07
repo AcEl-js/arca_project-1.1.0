@@ -92,8 +92,7 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
     Seed default policies into ChromaDB from data/policies folder
     Requires admin key for security
     """
-    ADMIN_KEY = os.getenv("ADMIN_SEED_KEY", "change-me-in-production")
-    
+ADMIN_KEY = "my-secret-seed-key-2024"  # Hard-coded KEY    
     if not x_admin_key or x_admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized - Invalid admin key")
     
