@@ -3,25 +3,20 @@ import chromadb
 import google.generativeai as genai
 from dotenv import load_dotenv
 import uuid
+import time
 
+# Import shared components to ensure we use the SAME collection and embedding logic
+from src.vector_db_search import get_db, GeminiEmbeddingFunction
 from src.utils import CHUNK_SIZE, CHUNK_OVERLAP
 
 load_dotenv()
 
-CHROMA_API_KEY = os.getenv("CHROMA_API_KEY")
-CHROMA_TENANT = os.getenv("CHROMA_TENANT_ID")
-CHROMA_DATABASE = os.getenv("CHROMA_DB")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not CHROMA_API_KEY or not CHROMA_TENANT or not CHROMA_DATABASE or not GEMINI_API_KEY:
-    raise Exception(
-        "\n❌ Missing Environment Variables\n"
-        "Please set: CHROMA_API_KEY, CHROMA_TENANT_ID, CHROMA_DB, and GEMINI_API_KEY\n"
-    )
-
+# Verify keys
+if not os.getenv("CHROMA_API_KEY") or not os.getenv("GEMINI_API_KEY"):
+    raise Exception("❌ Missing Environment Variables")
 
 # ------------------------------
-# Simple Text Splitter (Replaces LangChain)
+# Simple Text Splitter
 # ------------------------------
 class SimpleTextSplitter:
     def __init__(self, chunk_size=1000, chunk_overlap=200):
@@ -29,184 +24,78 @@ class SimpleTextSplitter:
         self.chunk_overlap = chunk_overlap
     
     def split_text(self, text: str) -> list:
-        """Split text into overlapping chunks"""
-        if not text:
-            return []
-        
+        if not text: return []
         chunks = []
         start = 0
         text_len = len(text)
         
         while start < text_len:
             end = min(start + self.chunk_size, text_len)
-            
-            # Try to break at natural boundaries if not at end
             if end < text_len:
-                # Look for paragraph break
                 last_para = text.rfind('\n\n', start, end)
-                if last_para > start:
-                    end = last_para + 2
+                if last_para > start: end = last_para + 2
                 else:
-                    # Look for sentence break
-                    for sep in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+                    for sep in ['. ', '! ', '? ', '.\n']:
                         last_sent = text.rfind(sep, start, end)
-                        if last_sent > start:
+                        if last_sent > start: 
                             end = last_sent + len(sep)
                             break
             
             chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            
-            # Move forward with overlap
-            if end >= text_len:
-                break
+            if chunk: chunks.append(chunk)
+            if end >= text_len: break
             start = end - self.chunk_overlap
-        
         return chunks
 
-
 # ------------------------------
-# Create Gemini Embedding Wrapper
+# Seed Logic
 # ------------------------------
-class LightweightGeminiEmbeddingFunction:
-    def __init__(self, api_key):
-        self.api_key = api_key
-        genai.configure(api_key=api_key)
+def seed_policies():
+    print("🚀 Starting Seeding Process for Collection: arca_policies_gemini_v3")
+    
+    # Use the central DB instance (points to v3)
+    db = get_db()
+    splitter = SimpleTextSplitter(CHUNK_SIZE, CHUNK_OVERLAP)
+    
+    policies_dir = "data/policies"
+    if not os.path.exists(policies_dir):
+        print(f"❌ Directory not found: {policies_dir}")
+        return
 
-    def name(self):
-        """Required by ChromaDB to identify the embedding function"""
-        return "gemini-text-embedding-004"
+    files = [f for f in os.listdir(policies_dir) if f.endswith(".md")]
+    print(f"📂 Found {len(files)} policy files")
 
-    def __call__(self, input):
-        """
-        IMPORTANT: Parameter MUST be named 'input' for ChromaDB compatibility
-        ChromaDB passes a list of strings to embed
-        """
-        if not input:
-            return []
+    for i, filename in enumerate(files):
+        filepath = os.path.join(policies_dir, filename)
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        if not content: continue
 
-        results = []
-        import time
+        chunks = splitter.split_text(content)
+        ids = [f"default-{uuid.uuid4()}" for _ in chunks]
+        metadatas = [{"source": filename, "user_id": "default"} for _ in chunks]
+
+        print(f"Processing {filename} ({len(chunks)} chunks)...")
+
+        # Add to DB
+        # We access the underlying collection directly for batching if needed, 
+        # or use the wrapper. The wrapper add_document does splitting, 
+        # but here we want control or to match previous logic.
+        # Let's use the wrapper's logic but adapted for this script
         
-        for i, text in enumerate(input):
-            try:
-                response = genai.embed_content(
-                    model="models/text-embedding-004",
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                results.append(response["embedding"])
-                
-                # Small delay to avoid rate limiting
-                if i > 0 and i % 5 == 0:
-                    time.sleep(0.5)
-                    
-            except Exception as e:
-                print(f"⚠️ Embedding error for chunk {i+1}: {e}")
-                # Return zero vector as fallback
-                results.append([0.0] * 768)
-                
-        return results
-
-
-# ------------------------------
-# Connect to Chroma Cloud
-# ------------------------------
-_client = None
-_collection = None
-
-
-def get_chroma_client():
-    global _client
-    if _client is None:
-        print("🔄 Connecting to Chroma Cloud...")
-        _client = chromadb.CloudClient(
-            api_key=CHROMA_API_KEY,
-            tenant=CHROMA_TENANT,
-            database=CHROMA_DATABASE,
-        )
-        print("✅ Chroma Cloud client connected")
-    return _client
-
-
-def get_db_collection():
-    global _collection
-
-    if _collection is None:
-        client = get_chroma_client()
-        ef = LightweightGeminiEmbeddingFunction(GEMINI_API_KEY)
-
-        _collection = client.get_or_create_collection(
-            name="arca_policies_gemini",
-            embedding_function=ef,
-        )
-
-        print("🔗 Chroma Cloud Connected (Gemini Embeddings) ✔")
-
-    return _collection
-
-
-# ------------------------------
-# Vector DB Wrapper
-# ------------------------------
-class VectorDB:
-    def __init__(self):
-        self.collection = get_db_collection()
-        # Use our simple text splitter instead of LangChain
-        self.text_splitter = SimpleTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-        )
-
-    def add_document(self, text: str, filename: str, user_id: str):
-        chunks = self.text_splitter.split_text(text)
-        ids = [f"{user_id}-{uuid.uuid4()}" for _ in chunks]
-        metadata = [{"source": filename, "user_id": user_id} for _ in chunks]
-
-        self.collection.add(
-            documents=chunks,
-            metadatas=metadata,
-            ids=ids,
-        )
-
-        print(f"☁️ Added {len(chunks)} chunks for user={user_id}, file={filename}")
-
-    def search(self, query: str, user_id: str, top_k: int = 5):
-        print(f"🔍 Searching '{query[:50]}...' for user '{user_id}'")
-
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=top_k,
-            where={"user_id": {"$eq": user_id}}
-        )
-
-        docs = results.get("documents", [[]])[0]
-
-        if not docs and user_id != "default":
-            print("⚠️ No results for user — fallback to default dataset")
-
-            results = self.collection.query(
-                query_texts=[query],
-                n_results=top_k,
-                where={"user_id": {"$eq": "default"}}
+        try:
+            db.collection.add(
+                documents=chunks,
+                metadatas=metadatas,
+                ids=ids
             )
-            docs = results.get("documents", [[]])[0]
+            print(f"✅ Added {filename}")
+            time.sleep(1) # Rate limit safety
+        except Exception as e:
+            print(f"❌ Failed to add {filename}: {e}")
 
-        if not docs:
-            print("❌ No match found")
-            return []
+    print("\n✅ Seeding Complete!")
 
-        return list(zip(results["ids"][0], docs))
-
-
-_db_instance = None
-
-
-def get_db():
-    global _db_instance
-    if _db_instance is None:
-        print("🔄 Initializing VectorDB instance...")
-        _db_instance = VectorDB()
-        print("✅ VectorDB instance ready")
-    return _db_instance
+if __name__ == "__main__":
+    seed_policies()
