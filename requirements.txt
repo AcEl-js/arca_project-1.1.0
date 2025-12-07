@@ -2,9 +2,8 @@ fastapi
 uvicorn[standard]
 pydantic>=2.6.3
 python-dotenv
-crewai
-langchain-text-splitters
+crewai[google-genai]
 pypdf
 google-generativeai
-chromadb>=0.5.10
+chromadb-client
 typing-extensions
