@@ -1,0 +1,7 @@
+# .railwayignore (if it exists, make sure data/ is NOT listed)
+__pycache__
+*.pyc
+.env
+.venv
+venv/
+tests/

@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ from src.agents import run_arca_pipeline
 from src.vector_db_search import get_db
 
 
-MAX_SIZE = 8 * 1024 * 1024  # 8MB limit for safer Vercel execution
+MAX_SIZE = 8 * 1024 * 1024  # 8MB limit
 
 
 class UploadLimitMiddleware(BaseHTTPMiddleware):
@@ -31,18 +32,19 @@ class UploadLimitMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="ARCA SaaS API")
 
+# Update CORS for Railway
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000", 
-        "https://arca-project-frontend.vercel.app",  # change this to your deployed frontend
-        "*"
+        "http://localhost:3000",
+        "https://arca-project-frontend.vercel.app",
+        "https://*.railway.app",  # Allow Railway preview URLs
+        "*"  # Remove this in production for security
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
 
 app.add_middleware(UploadLimitMiddleware)
 
@@ -63,7 +65,6 @@ def extract_text_stream(file: UploadFile, filename: str) -> str:
         text = ""
         for page in pdf_reader.pages:
             try:
-                # Limit per-page extraction to stay safe in memory
                 page_text = page.extract_text() or ""
                 text += page_text[:2000] + "\n"
             except Exception:
@@ -73,6 +74,107 @@ def extract_text_stream(file: UploadFile, filename: str) -> str:
 
     else:
         return file.file.read().decode("utf-8")
+
+
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "ARCA API",
+        "version": "1.0.0"
+    }
+
+
+@app.post("/seed_defaults")
+async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
+    """
+    Seed default policies into ChromaDB from data/policies folder
+    Requires admin key for security
+    
+    Usage:
+    curl -X POST https://your-app.railway.app/seed_defaults \
+         -H "x-admin-key: your-secret-key"
+    """
+    # Set a secret admin key in your environment variables
+    ADMIN_KEY = os.getenv("ADMIN_SEED_KEY", "change-me-in-production")
+    
+    if not x_admin_key or x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized - Invalid admin key")
+    
+    try:
+        from pathlib import Path
+        
+        # Path to policies folder
+        policies_dir = Path("data/policies")
+        
+        if not policies_dir.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Policies folder not found at {policies_dir}"
+            )
+        
+        # Get all markdown files
+        policy_files = list(policies_dir.glob("*.md"))
+        
+        if not policy_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No .md files found in {policies_dir}"
+            )
+        
+        db = get_db()
+        successful = []
+        failed = []
+        
+        for filepath in policy_files:
+            filename = filepath.name
+            
+            try:
+                # Read file
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                if not content.strip():
+                    failed.append({"file": filename, "error": "Empty file"})
+                    continue
+                
+                # Add to ChromaDB
+                db.add_document(
+                    text=content,
+                    filename=filename,
+                    user_id="default"
+                )
+                
+                successful.append({
+                    "file": filename,
+                    "size": len(content)
+                })
+                
+            except Exception as e:
+                failed.append({
+                    "file": filename,
+                    "error": str(e)
+                })
+        
+        return {
+            "status": "success",
+            "message": "Seeding completed",
+            "summary": {
+                "total_files": len(policy_files),
+                "successful": len(successful),
+                "failed": len(failed)
+            },
+            "details": {
+                "successful": successful,
+                "failed": failed
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Seeding failed: {str(e)}")
 
 
 @app.post("/upload_policy")
@@ -116,3 +218,10 @@ async def analyze(
 
     result = run_arca_pipeline(final_text, x_user_id, date_of_law)
     return result
+
+
+# For local development
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
