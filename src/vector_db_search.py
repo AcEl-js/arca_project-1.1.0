@@ -68,9 +68,10 @@ def get_db_collection():
         ef = LightweightGeminiEmbeddingFunction(api_key=GEMINI_API_KEY)
 
         _collection = client.get_or_create_collection(
-            name="arca_policies",
-            embedding_function=ef,
-        )
+        name="arca_policies_gemini",  # IMPORTANT!! Must be different
+        embedding_function=ef,
+)
+
 
         print("🔗 Chroma Cloud Collection Connected (Lightweight Gemini) ✓")
 
