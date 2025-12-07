@@ -215,3 +215,9 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+@app.get("/debug-env")
+async def debug_env_endpoint():
+    return {
+        "admin_env": os.getenv("ADMIN_SEED_KEY")
+    }
