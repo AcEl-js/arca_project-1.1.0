@@ -74,6 +74,10 @@ class LightweightGeminiEmbeddingFunction:
         self.api_key = api_key
         genai.configure(api_key=api_key)
 
+    def name(self):
+        """Required by ChromaDB to identify the embedding function"""
+        return "gemini-text-embedding-004"
+
     def __call__(self, input):
         """
         IMPORTANT: Parameter MUST be named 'input' for ChromaDB compatibility
