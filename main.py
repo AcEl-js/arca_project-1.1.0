@@ -92,61 +92,63 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
     Seed default policies into ChromaDB from data/policies folder
     Requires admin key for security
     """
-ADMIN_KEY = "my-secret-seed-key-2024"  # Hard-coded KEY    
+    
+    ADMIN_KEY = "my-secret-seed-key-2024"  # Hard-coded temporary key
+
     if not x_admin_key or x_admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Unauthorized - Invalid admin key")
-    
+
     try:
         from pathlib import Path
-        
+
         policies_dir = Path("data/policies")
-        
+
         if not policies_dir.exists():
             raise HTTPException(
                 status_code=404, 
                 detail=f"Policies folder not found at {policies_dir}"
             )
-        
+
         policy_files = list(policies_dir.glob("*.md"))
-        
+
         if not policy_files:
             raise HTTPException(
                 status_code=404,
                 detail=f"No .md files found in {policies_dir}"
             )
-        
+
         db = get_db()
         successful = []
         failed = []
-        
+
         for filepath in policy_files:
             filename = filepath.name
-            
+
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     content = f.read()
-                
+
                 if not content.strip():
                     failed.append({"file": filename, "error": "Empty file"})
                     continue
-                
+
                 db.add_document(
                     text=content,
                     filename=filename,
                     user_id="default"
                 )
-                
+
                 successful.append({
                     "file": filename,
                     "size": len(content)
                 })
-                
+
             except Exception as e:
                 failed.append({
                     "file": filename,
                     "error": str(e)
                 })
-        
+
         return {
             "status": "success",
             "message": "Seeding completed",
@@ -160,9 +162,10 @@ ADMIN_KEY = "my-secret-seed-key-2024"  # Hard-coded KEY
                 "failed": failed
             }
         }
-        
+
     except HTTPException:
         raise
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Seeding failed: {str(e)}")
 
