@@ -38,8 +38,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://arca-project-frontend.vercel.app",
-        "https://*.railway.app",  # Allow Railway preview URLs
-        "*"  # Remove this in production for security
+        "https://*.railway.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -54,7 +54,7 @@ def extract_text_stream(file: UploadFile, filename: str) -> str:
         buffer = io.BytesIO()
 
         while True:
-            chunk = file.file.read(1024 * 1024)  # 1MB chunks
+            chunk = file.file.read(1024 * 1024)
             if not chunk:
                 break
             buffer.write(chunk)
@@ -91,12 +91,7 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
     """
     Seed default policies into ChromaDB from data/policies folder
     Requires admin key for security
-    
-    Usage:
-    curl -X POST https://your-app.railway.app/seed_defaults \
-         -H "x-admin-key: your-secret-key"
     """
-    # Set a secret admin key in your environment variables
     ADMIN_KEY = os.getenv("ADMIN_SEED_KEY", "change-me-in-production")
     
     if not x_admin_key or x_admin_key != ADMIN_KEY:
@@ -105,7 +100,6 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
     try:
         from pathlib import Path
         
-        # Path to policies folder
         policies_dir = Path("data/policies")
         
         if not policies_dir.exists():
@@ -114,7 +108,6 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
                 detail=f"Policies folder not found at {policies_dir}"
             )
         
-        # Get all markdown files
         policy_files = list(policies_dir.glob("*.md"))
         
         if not policy_files:
@@ -131,7 +124,6 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
             filename = filepath.name
             
             try:
-                # Read file
                 with open(filepath, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
@@ -139,7 +131,6 @@ async def seed_defaults_endpoint(x_admin_key: str = Header(None)):
                     failed.append({"file": filename, "error": "Empty file"})
                     continue
                 
-                # Add to ChromaDB
                 db.add_document(
                     text=content,
                     filename=filename,
@@ -220,7 +211,6 @@ async def analyze(
     return result
 
 
-# For local development
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
