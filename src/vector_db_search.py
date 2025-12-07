@@ -116,7 +116,7 @@ def get_db_collection():
         ef = LightweightGeminiEmbeddingFunction(GEMINI_API_KEY)
 
         _collection = client.get_or_create_collection(
-            name="arca_policies_gemini",
+            name="arca_policies_v3",
             embedding_function=ef,
         )
 
@@ -182,4 +182,5 @@ _db_instance = VectorDB()
 
 
 def get_db():
+
     return _db_instance
