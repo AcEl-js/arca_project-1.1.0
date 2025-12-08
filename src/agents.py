@@ -2,6 +2,7 @@ import os
 import sys
 import traceback
 import time
+import re
 from typing import List, Type
 
 from pydantic import BaseModel, Field
@@ -13,7 +14,7 @@ from src.utils import regulation_id_for, today_iso
 from src.gemini_manager import get_key_manager
 
 # ============================================================
-# 1. TOOL with Smart Deduplication
+# 1. TOOL DEFINITION
 # ============================================================
 class VectorDBSearchInput(BaseModel):
     query: str
@@ -23,46 +24,28 @@ class VectorDBSearchTool(BaseTool):
     name: str = "vector_db_search"
     description: str = (
         "Search internal policy documents for relevant excerpts. "
-        "Returns deduplicated results from unique policy sources. "
-        "Provide a descriptive search query and the user_id."
+        "Provide a search query describing what you're looking for, and the user_id. "
+        "Returns the top 5 most relevant policy excerpts with their IDs."
     )
     args_schema: Type[BaseModel] = VectorDBSearchInput
 
     def _run(self, query: str, user_id: str) -> str:
         try:
-            # Fetch more results to handle deduplication
-            results = get_db().search(query, user_id, top_k=10)
+            results = get_db().search(query, user_id, top_k=5)
 
+            # Fallback to default user if specific user has no data
             if not results and user_id != "default":
-                results = get_db().search(query, "default", top_k=10)
+                results = get_db().search(query, "default", top_k=5)
 
             if not results:
                 return "NO RESULT"
 
-            # Deduplicate by policy content similarity
-            unique_results = []
-            seen_fingerprints = set()
-            
-            for doc_id, text in results:
-                # Create fingerprint from first 150 chars
-                fingerprint = text[:150].strip().lower()
-                
-                if fingerprint not in seen_fingerprints:
-                    seen_fingerprints.add(fingerprint)
-                    unique_results.append((doc_id, text))
-                
-                # Limit to 3 unique policy excerpts per search
-                if len(unique_results) >= 3:
-                    break
-
-            if not unique_results:
-                return "NO RESULT"
-
             blocks = []
-            for doc_id, text in unique_results:
+            for doc_id, text in results[:5]:
+                # Clean text to save tokens and improve readability
                 cleaned = text.replace("\n", " ").replace("\r", " ").strip()
-                cleaned = cleaned[:700]  # More context
-                blocks.append(f"POLICY_ID: {doc_id}\nCONTENT: {cleaned}\n---")
+                cleaned = cleaned[:600]
+                blocks.append(f"POLICY_ID: {doc_id}\nEXCERPT: {cleaned}\n---")
 
             return "\n".join(blocks)
             
@@ -72,7 +55,7 @@ class VectorDBSearchTool(BaseTool):
 vector_db_search_tool = VectorDBSearchTool()
 
 # ============================================================
-# 2. Pydantic MODELS
+# 2. PYDANTIC MODELS (OUTPUT STRUCTURE)
 # ============================================================
 class PolicyMatch(BaseModel):
     policy_id: str
@@ -80,56 +63,43 @@ class PolicyMatch(BaseModel):
     relevance_reason: str = Field(description="Why this policy is relevant")
 
 class PolicyReport(BaseModel):
-    policies: List[PolicyMatch] = Field(
-        default=[], 
-        description="List of relevant policies found",
-        max_length=5
-    )
+    policies: List[PolicyMatch] = Field(default=[], description="List of relevant policies found")
 
 class RiskItem(BaseModel):
     policy_id: str
     severity: str = Field(description="HIGH, MEDIUM, or LOW")
-    divergence_summary: str = Field(description="What conflicts or is missing")
+    divergence_summary: str = Field(description="Clear description of the conflict")
     conflicting_policy_excerpt: str
     new_rule_excerpt: str
-    recommended_action: str = Field(description="Specific action to resolve")
+    recommended_action: str = Field(description="Specific action to resolve the divergence")
 
 class RiskAnalysisReport(BaseModel):
-    risks: List[RiskItem] = Field(
-        default=[], 
-        description="List of identified compliance risks (max 5)",
-        max_length=5
-    )
+    risks: List[RiskItem] = Field(default=[], description="List of identified compliance risks")
 
 class FinalRecommendation(BaseModel):
-    recommendation: str = Field(description="Executive summary and action plan")
-    compliance_score: str = Field(
-        default="UNKNOWN", 
-        description="COMPLIANT, NEEDS_UPDATES, or NON_COMPLIANT"
-    )
+    recommendation: str = Field(description="Executive summary and prioritized action plan")
+    compliance_score: str = Field(default="UNKNOWN", description="COMPLIANT, NEEDS_UPDATES, or NON_COMPLIANT")
 
 # ============================================================
-# 3. Dynamic Crew Builder
+# 3. DYNAMIC CREW BUILDER
 # ============================================================
 def create_crew(api_key):
     """Creates a fresh crew instance with a specific API Key"""
     
+    # Use Gemini 1.5 Flash for best balance of speed, cost, and JSON instruction following
     llm = LLM(
-        model="gemini/gemini-2.5-flash-lite",
-        temperature=0.1,
+        model="gemini/gemini-1.5-flash",
+        temperature=0.1,  # Low temperature for strict adherence to formats
         api_key=api_key, 
     )
 
     # ==== AGENTS ====
     policy_researcher = Agent(
         role="Policy Research Specialist",
-        goal=(
-            "Find the TOP 3-5 most relevant internal policies related to the regulation. "
-            "Focus on quality over quantity."
-        ),
+        goal="Find relevant internal policy documents using semantic search.",
         backstory=(
-            "You are an expert at finding relevant policies. You search for key topics "
-            "separately and identify the MOST important policies, avoiding duplicates."
+            "You are an expert at breaking down regulations into key topics and "
+            "finding the exact internal policy clauses that apply."
         ),
         tools=[vector_db_search_tool],
         llm=llm,
@@ -138,16 +108,10 @@ def create_crew(api_key):
 
     compliance_auditor = Agent(
         role="Compliance Risk Analyst",
-        goal=(
-            "Identify the TOP 5 MOST CRITICAL compliance risks. "
-            "Prioritize HIGH severity issues. One risk per policy maximum."
-        ),
+        goal="Identify specific conflicts (High/Medium/Low) between regulation and policy.",
         backstory=(
-            "You are a meticulous auditor who identifies the most critical issues:\n"
-            "- HIGH: Direct conflicts or missing critical requirements\n"
-            "- MEDIUM: Incomplete implementations\n"
-            "- LOW: Minor improvement opportunities\n"
-            "You focus on the BIGGEST risks, not every minor detail."
+            "You are a meticulous auditor. You compare texts line-by-line to find "
+            "missing requirements, contradictory rules, or vague definitions."
         ),
         llm=llm,
         verbose=True,
@@ -155,29 +119,28 @@ def create_crew(api_key):
 
     report_generator = Agent(
         role="Executive Compliance Advisor",
-        goal="Create a concise, actionable executive summary",
-        backstory=(
-            "You synthesize findings into clear, prioritized recommendations. "
-            "You focus on business impact and next steps."
-        ),
+        goal="Generate a structured action plan and executive summary.",
+        backstory="Synthesizes technical findings into business-ready recommendations.",
         llm=llm,
         verbose=True,
     )
 
     # ==== TASKS ====
+    # We explicitly forbid Markdown code blocks to prevent JSON parsing errors
+    
     task_research = Task(
         description=(
-            "Analyze the regulation and find the 3-5 most relevant policies.\n\n"
-            "NEW REGULATION:\n{new_regulation_text}\n\n"
+            "Analyze the new regulation and search for related internal policies.\n"
+            "NEW REGULATION: {new_regulation_text}\n"
             "USER_ID: {user_id}\n\n"
-            "INSTRUCTIONS:\n"
-            "1. Identify 2-3 key topics from the regulation\n"
-            "2. Search for each topic using vector_db_search\n"
-            "3. Select the TOP 3-5 most relevant unique policies\n"
-            "4. Return JSON with policies array (max 5 items)\n\n"
-            "IMPORTANT: Return ONLY raw JSON. No markdown, no extra text."
+            "1. Identify key topics.\n"
+            "2. Use vector_db_search for each topic.\n"
+            "3. Return a JSON list of matches.\n\n"
+            "CRITICAL: Output MUST be raw JSON only. "
+            "Do NOT use markdown blocks (```json). "
+            "Do NOT add introductory text."
         ),
-        expected_output="JSON with max 5 policies",
+        expected_output="Raw JSON object matching PolicyReport schema",
         agent=policy_researcher,
         tools=[vector_db_search_tool],
         output_pydantic=PolicyReport,
@@ -185,30 +148,29 @@ def create_crew(api_key):
 
     task_audit = Task(
         description=(
-            "Compare regulation vs policies. Find TOP 5 CRITICAL risks.\n\n"
-            "NEW REGULATION:\n{new_regulation_text}\n\n"
-            "INSTRUCTIONS:\n"
-            "1. For each requirement, check if policies comply\n"
-            "2. Identify the 5 MOST CRITICAL issues (prioritize HIGH severity)\n"
-            "3. Maximum ONE risk per policy (focus on biggest issue per policy)\n"
-            "4. If < 5 risks found, that's OK - only report real issues\n"
-            "5. Return JSON with risks array (max 5 items)\n\n"
-            "IMPORTANT: Return ONLY raw JSON. No markdown. "
-            "If fully compliant, return empty risks array."
+            "Compare regulation vs policies.\n"
+            "NEW REGULATION: {new_regulation_text}\n"
+            "POLICIES FOUND: (from previous task)\n\n"
+            "Identify risks (HIGH/MEDIUM/LOW).\n"
+            "If no conflicts, return empty list.\n\n"
+            "CRITICAL: Output MUST be raw JSON only. "
+            "Do NOT use markdown blocks (```json). "
+            "Do NOT add text before or after the JSON."
         ),
         agent=compliance_auditor,
         context=[task_research],
-        expected_output="JSON with max 5 risks",
+        expected_output="Raw JSON object matching RiskAnalysisReport schema",
         output_pydantic=RiskAnalysisReport,
     )
 
     task_recommend = Task(
         description=(
-            "Create executive summary based on identified risks.\n"
-            "Be concise and action-oriented.\n"
-            "IMPORTANT: Return ONLY raw JSON."
+            "Create executive summary and action plan.\n"
+            "Based on identified risks.\n\n"
+            "CRITICAL: Output MUST be raw JSON only. "
+            "Do NOT use markdown blocks (```json)."
         ),
-        expected_output="JSON with recommendation and compliance_score",
+        expected_output="Raw JSON object matching FinalRecommendation schema",
         agent=report_generator,
         context=[task_audit],
         output_pydantic=FinalRecommendation,
@@ -224,7 +186,7 @@ def create_crew(api_key):
     return crew, task_audit, task_recommend
 
 # ============================================================
-# 4. EXECUTION PIPELINE
+# 4. EXECUTION PIPELINE WITH RETRY & LIMITS
 # ============================================================
 def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str | None = None):
     key_manager = get_key_manager()
@@ -236,69 +198,84 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
 
     for attempt in range(max_retries):
         try:
+            # 1. Get current valid key
             current_key = key_manager.get_current_key()
+            
+            # 2. Build Crew
             crew, task_audit, task_recommend = create_crew(current_key)
             
             print(f"🚀 Launching Crew (Attempt {attempt+1}/{max_retries})")
             
+            # 3. Run
             crew.kickoff(inputs={
                 "new_regulation_text": new_regulation_text,
                 "user_id": user_id,
             })
 
-            risk_report = task_audit.output.pydantic
-            reco = task_recommend.output.pydantic
-            break
+            # 4. Safe Extraction
+            if hasattr(task_audit.output, 'pydantic'):
+                risk_report = task_audit.output.pydantic
+            
+            if hasattr(task_recommend.output, 'pydantic'):
+                reco = task_recommend.output.pydantic
+            
+            # If we got results, successful break
+            if risk_report:
+                break
 
         except Exception as e:
             error_msg = str(e).lower()
             last_error = e
+            print(f"⚠️ Error in attempt {attempt+1}: {e}")
             
+            # Rate Limit Handling (429)
             if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
-                print(f"⚠️ Rate Limit! Rotating key...")
+                print("🔄 Rate limit hit. Rotating key...")
                 key_manager.rotate_key()
                 time.sleep(2)
+            
+            # JSON/Validation Error Handling (Bad LLM output)
+            elif "validation error" in error_msg or "json" in error_msg:
+                print("🔄 JSON parsing error. Retrying generation...")
+                time.sleep(1)
+            
+            # Generic error
             else:
-                print(f"❌ Error: {e}")
-                if attempt < max_retries - 1:
-                    print("🔄 Retrying...")
-                    time.sleep(1)
-                else:
-                    traceback.print_exc()
-                    break
+                traceback.print_exc()
+                time.sleep(1)
 
     # ========================================
-    # Process Results
+    # Process Results & Fallback
     # ========================================
     risks = risk_report.risks if risk_report else []
     
-    # System error fallback
+    # Case A: Total Failure
     if not risk_report and last_error:
         risks = [
             RiskItem(
                 policy_id="system_error",
                 severity="HIGH",
-                divergence_summary=f"Analysis failed: {str(last_error)[:200]}",
+                divergence_summary=f"Analysis Error: {str(last_error)[:200]}",
                 conflicting_policy_excerpt="N/A",
                 new_rule_excerpt=new_regulation_text[:300],
-                recommended_action="Retry analysis or contact support"
+                recommended_action="Please try again later or check input size."
             )
         ]
     
-    # Fully compliant fallback
+    # Case B: Compliant (No risks found)
     elif len(risks) == 0:
         risks = [
             RiskItem(
                 policy_id="compliant",
                 severity="LOW",
-                divergence_summary="No significant compliance gaps identified",
-                conflicting_policy_excerpt="Existing policies align with regulation",
+                divergence_summary="No significant compliance gaps identified.",
+                conflicting_policy_excerpt="Policies align with the new regulation.",
                 new_rule_excerpt=new_regulation_text[:300],
-                recommended_action="Conduct periodic review to ensure continued compliance"
+                recommended_action="Conduct periodic review."
             )
         ]
 
-    # ⭐ ENFORCE MAXIMUM 5 RISKS ⭐
+    # Case C: Limit Results to Max 5 (Requested feature)
     risks = risks[:5]
 
     return {
@@ -317,5 +294,5 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
             for r in risks
         ],
         "recommendation": reco.recommendation if reco else "Analysis completed.",
-        "compliance_score": reco.compliance_score if (reco and hasattr(reco, 'compliance_score')) else "UNKNOWN"
+        "compliance_score": reco.compliance_score if reco and hasattr(reco, 'compliance_score') else "UNKNOWN"
     }
