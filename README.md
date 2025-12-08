@@ -64,7 +64,7 @@ chunk_overlap = 50
 
 ### Embedding utilisé
 ```
-model = all-MiniLM-L6-v2
+model = GeminiEmbeddingFunction
 ```
 
 ### Base vectorielle
@@ -217,6 +217,6 @@ Ce système permet à une entreprise de :
 ---
 
 # 🧑‍🔧 Auteur & Contact  
-Projet réalisé par **[Votre nom]**  
+Projet réalisé par **[AcEl (autoGate)]**  
 Soutenance ARCA 2025  
 # arca_project-1.1.0
