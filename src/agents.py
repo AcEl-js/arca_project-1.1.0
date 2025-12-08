@@ -13,7 +13,7 @@ from src.utils import regulation_id_for, today_iso
 from src.gemini_manager import get_key_manager
 
 # ============================================================
-# 1. TOOL 
+# 1. TOOL with Smart Deduplication
 # ============================================================
 class VectorDBSearchInput(BaseModel):
     query: str
@@ -23,26 +23,46 @@ class VectorDBSearchTool(BaseTool):
     name: str = "vector_db_search"
     description: str = (
         "Search internal policy documents for relevant excerpts. "
-        "Provide a search query describing what you're looking for, and the user_id. "
-        "Returns the top 5 most relevant policy excerpts with their IDs."
+        "Returns deduplicated results from unique policy sources. "
+        "Provide a descriptive search query and the user_id."
     )
     args_schema: Type[BaseModel] = VectorDBSearchInput
 
     def _run(self, query: str, user_id: str) -> str:
         try:
-            results = get_db().search(query, user_id, top_k=5)
+            # Fetch more results to handle deduplication
+            results = get_db().search(query, user_id, top_k=10)
 
             if not results and user_id != "default":
-                results = get_db().search(query, "default", top_k=5)
+                results = get_db().search(query, "default", top_k=10)
 
             if not results:
                 return "NO RESULT"
 
+            # Deduplicate by policy content similarity
+            unique_results = []
+            seen_fingerprints = set()
+            
+            for doc_id, text in results:
+                # Create fingerprint from first 150 chars
+                fingerprint = text[:150].strip().lower()
+                
+                if fingerprint not in seen_fingerprints:
+                    seen_fingerprints.add(fingerprint)
+                    unique_results.append((doc_id, text))
+                
+                # Limit to 3 unique policy excerpts per search
+                if len(unique_results) >= 3:
+                    break
+
+            if not unique_results:
+                return "NO RESULT"
+
             blocks = []
-            for doc_id, text in results[:5]:
+            for doc_id, text in unique_results:
                 cleaned = text.replace("\n", " ").replace("\r", " ").strip()
-                cleaned = cleaned[:600]
-                blocks.append(f"POLICY_ID: {doc_id}\nEXCERPT: {cleaned}\n---")
+                cleaned = cleaned[:700]  # More context
+                blocks.append(f"POLICY_ID: {doc_id}\nCONTENT: {cleaned}\n---")
 
             return "\n".join(blocks)
             
@@ -57,25 +77,36 @@ vector_db_search_tool = VectorDBSearchTool()
 class PolicyMatch(BaseModel):
     policy_id: str
     excerpt: str
-    relevance_reason: str = Field(description="Why this policy is relevant to the regulation")
+    relevance_reason: str = Field(description="Why this policy is relevant")
 
 class PolicyReport(BaseModel):
-    policies: List[PolicyMatch] = Field(default=[], description="List of relevant policies found")
+    policies: List[PolicyMatch] = Field(
+        default=[], 
+        description="List of relevant policies found",
+        max_length=5
+    )
 
 class RiskItem(BaseModel):
     policy_id: str
     severity: str = Field(description="HIGH, MEDIUM, or LOW")
-    divergence_summary: str = Field(description="Clear description of what conflicts or is missing")
+    divergence_summary: str = Field(description="What conflicts or is missing")
     conflicting_policy_excerpt: str
     new_rule_excerpt: str
-    recommended_action: str = Field(description="Specific action to resolve the divergence")
+    recommended_action: str = Field(description="Specific action to resolve")
 
 class RiskAnalysisReport(BaseModel):
-    risks: List[RiskItem] = Field(default=[], description="List of identified compliance risks")
+    risks: List[RiskItem] = Field(
+        default=[], 
+        description="List of identified compliance risks (max 5)",
+        max_length=5
+    )
 
 class FinalRecommendation(BaseModel):
-    recommendation: str = Field(description="Executive summary and prioritized action plan")
-    compliance_score: str = Field(default="UNKNOWN", description="Overall compliance level: COMPLIANT, NEEDS_UPDATES, or NON_COMPLIANT")
+    recommendation: str = Field(description="Executive summary and action plan")
+    compliance_score: str = Field(
+        default="UNKNOWN", 
+        description="COMPLIANT, NEEDS_UPDATES, or NON_COMPLIANT"
+    )
 
 # ============================================================
 # 3. Dynamic Crew Builder
@@ -83,10 +114,9 @@ class FinalRecommendation(BaseModel):
 def create_crew(api_key):
     """Creates a fresh crew instance with a specific API Key"""
     
-    # CHANGED: Switched to gemini-1.5-flash for better JSON stability
     llm = LLM(
         model="gemini/gemini-2.5-flash-lite",
-        temperature=0.1, # Lower temperature for stricter output
+        temperature=0.1,
         api_key=api_key, 
     )
 
@@ -94,13 +124,12 @@ def create_crew(api_key):
     policy_researcher = Agent(
         role="Policy Research Specialist",
         goal=(
-            "Find all internal policy documents that relate to the new regulation. "
-            "Search for policies covering the same topics, requirements, or business areas."
+            "Find the TOP 3-5 most relevant internal policies related to the regulation. "
+            "Focus on quality over quantity."
         ),
         backstory=(
-            "You are an expert at understanding regulatory requirements and finding "
-            "relevant internal policies. You break down regulations into key topics "
-            "and search for each topic separately to ensure comprehensive coverage."
+            "You are an expert at finding relevant policies. You search for key topics "
+            "separately and identify the MOST important policies, avoiding duplicates."
         ),
         tools=[vector_db_search_tool],
         llm=llm,
@@ -110,14 +139,15 @@ def create_crew(api_key):
     compliance_auditor = Agent(
         role="Compliance Risk Analyst",
         goal=(
-            "Identify specific conflicts, gaps, or weaknesses between the new regulation "
-            "and existing policies. Focus on HIGH severity risks first."
+            "Identify the TOP 5 MOST CRITICAL compliance risks. "
+            "Prioritize HIGH severity issues. One risk per policy maximum."
         ),
         backstory=(
-            "You are a meticulous compliance auditor. You compare requirements line-by-line, identifying:\n"
+            "You are a meticulous auditor who identifies the most critical issues:\n"
             "- HIGH: Direct conflicts or missing critical requirements\n"
-            "- MEDIUM: Incomplete implementations or unclear procedures\n"
-            "- LOW: Minor gaps or opportunities for improvement\n"
+            "- MEDIUM: Incomplete implementations\n"
+            "- LOW: Minor improvement opportunities\n"
+            "You focus on the BIGGEST risks, not every minor detail."
         ),
         llm=llm,
         verbose=True,
@@ -125,10 +155,10 @@ def create_crew(api_key):
 
     report_generator = Agent(
         role="Executive Compliance Advisor",
-        goal="Create clear, actionable recommendations prioritized by business impact",
+        goal="Create a concise, actionable executive summary",
         backstory=(
-            "You synthesize compliance findings into executive-ready reports. "
-            "You prioritize actions, estimate effort, and provide clear next steps."
+            "You synthesize findings into clear, prioritized recommendations. "
+            "You focus on business impact and next steps."
         ),
         llm=llm,
         verbose=True,
@@ -137,18 +167,17 @@ def create_crew(api_key):
     # ==== TASKS ====
     task_research = Task(
         description=(
-            "Analyze the new regulation and search for related internal policies.\n\n"
+            "Analyze the regulation and find the 3-5 most relevant policies.\n\n"
             "NEW REGULATION:\n{new_regulation_text}\n\n"
             "USER_ID: {user_id}\n\n"
             "INSTRUCTIONS:\n"
-            "1. Identify key topics (e.g., 'data retention', 'access controls')\n"
-            "2. For EACH topic, use vector_db_search\n"
-            "3. Collect all relevant policy excerpts\n"
-            "4. Return a JSON list of the most relevant policies found\n\n"
-            "IMPORTANT: Output MUST be raw JSON. Do not use markdown code blocks. "
-            "Do not add any text before or after the JSON."
+            "1. Identify 2-3 key topics from the regulation\n"
+            "2. Search for each topic using vector_db_search\n"
+            "3. Select the TOP 3-5 most relevant unique policies\n"
+            "4. Return JSON with policies array (max 5 items)\n\n"
+            "IMPORTANT: Return ONLY raw JSON. No markdown, no extra text."
         ),
-        expected_output="Valid JSON object matching the PolicyReport schema",
+        expected_output="JSON with max 5 policies",
         agent=policy_researcher,
         tools=[vector_db_search_tool],
         output_pydantic=PolicyReport,
@@ -156,29 +185,30 @@ def create_crew(api_key):
 
     task_audit = Task(
         description=(
-            "Compare the new regulation against the policies found.\n\n"
+            "Compare regulation vs policies. Find TOP 5 CRITICAL risks.\n\n"
             "NEW REGULATION:\n{new_regulation_text}\n\n"
-            "POLICIES FOUND: (from previous task)\n\n"
             "INSTRUCTIONS:\n"
-            "1. Check coverage for each requirement\n"
-            "2. Identify conflicts, gaps, or weaknesses\n"
-            "3. Assess severity (HIGH/MEDIUM/LOW)\n"
-            "4. Provide specific recommended action\n\n"
-            "IMPORTANT: Output MUST be raw JSON. Do not use markdown code blocks. "
-            "If policies are COMPLIANT, return an empty risks array."
+            "1. For each requirement, check if policies comply\n"
+            "2. Identify the 5 MOST CRITICAL issues (prioritize HIGH severity)\n"
+            "3. Maximum ONE risk per policy (focus on biggest issue per policy)\n"
+            "4. If < 5 risks found, that's OK - only report real issues\n"
+            "5. Return JSON with risks array (max 5 items)\n\n"
+            "IMPORTANT: Return ONLY raw JSON. No markdown. "
+            "If fully compliant, return empty risks array."
         ),
         agent=compliance_auditor,
         context=[task_research],
-        expected_output="Valid JSON object matching the RiskAnalysisReport schema",
+        expected_output="JSON with max 5 risks",
         output_pydantic=RiskAnalysisReport,
     )
 
     task_recommend = Task(
         description=(
-            "Create an executive summary and action plan based on the risks identified.\n"
-            "IMPORTANT: Output MUST be raw JSON. Do not use markdown code blocks."
+            "Create executive summary based on identified risks.\n"
+            "Be concise and action-oriented.\n"
+            "IMPORTANT: Return ONLY raw JSON."
         ),
-        expected_output="Valid JSON object matching the FinalRecommendation schema",
+        expected_output="JSON with recommendation and compliance_score",
         agent=report_generator,
         context=[task_audit],
         output_pydantic=FinalRecommendation,
@@ -194,7 +224,7 @@ def create_crew(api_key):
     return crew, task_audit, task_recommend
 
 # ============================================================
-# 4. EXECUTION PIPELINE WITH RETRY
+# 4. EXECUTION PIPELINE
 # ============================================================
 def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str | None = None):
     key_manager = get_key_manager()
@@ -209,7 +239,7 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
             current_key = key_manager.get_current_key()
             crew, task_audit, task_recommend = create_crew(current_key)
             
-            print(f"🚀 Launching Crew (Attempt {attempt+1}/{max_retries}) using Gemini 1.5 Flash")
+            print(f"🚀 Launching Crew (Attempt {attempt+1}/{max_retries})")
             
             crew.kickoff(inputs={
                 "new_regulation_text": new_regulation_text,
@@ -224,27 +254,25 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
             error_msg = str(e).lower()
             last_error = e
             
-            # Check for Rate Limits (429 or Resource Exhausted)
             if "429" in error_msg or "resource_exhausted" in error_msg or "quota" in error_msg:
-                print(f"⚠️ Rate Limit Hit! Rotating key...")
+                print(f"⚠️ Rate Limit! Rotating key...")
                 key_manager.rotate_key()
                 time.sleep(2)
             else:
-                print(f"❌ Error during execution: {e}")
-                # Retry even on validation errors, sometimes it's just a bad generation
+                print(f"❌ Error: {e}")
                 if attempt < max_retries - 1:
-                    print("🔄 Retrying due to validation/parsing error...")
+                    print("🔄 Retrying...")
                     time.sleep(1)
                 else:
                     traceback.print_exc()
                     break
 
     # ========================================
-    # Process Results & Fallback
+    # Process Results
     # ========================================
     risks = risk_report.risks if risk_report else []
     
-    # If total failure
+    # System error fallback
     if not risk_report and last_error:
         risks = [
             RiskItem(
@@ -253,25 +281,25 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
                 divergence_summary=f"Analysis failed: {str(last_error)[:200]}",
                 conflicting_policy_excerpt="N/A",
                 new_rule_excerpt=new_regulation_text[:300],
-                recommended_action="Please try again. If the issue persists, check API quotas."
+                recommended_action="Retry analysis or contact support"
             )
         ]
     
-    # If compliant (no risks found)
+    # Fully compliant fallback
     elif len(risks) == 0:
         risks = [
             RiskItem(
                 policy_id="compliant",
                 severity="LOW",
-                divergence_summary="No significant compliance gaps identified.",
-                conflicting_policy_excerpt="Policies align with the new regulation.",
+                divergence_summary="No significant compliance gaps identified",
+                conflicting_policy_excerpt="Existing policies align with regulation",
                 new_rule_excerpt=new_regulation_text[:300],
-                recommended_action="Conduct periodic review."
+                recommended_action="Conduct periodic review to ensure continued compliance"
             )
         ]
 
-    # Limit to 10 items to prevent UI overload
-    risks = risks[:10]
+    # ⭐ ENFORCE MAXIMUM 5 RISKS ⭐
+    risks = risks[:5]
 
     return {
         "regulation_id": regulation_id_for(new_regulation_text, date_of_law),
@@ -289,5 +317,5 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
             for r in risks
         ],
         "recommendation": reco.recommendation if reco else "Analysis completed.",
-        "compliance_score": reco.compliance_score if reco and hasattr(reco, 'compliance_score') else "UNKNOWN"
+        "compliance_score": reco.compliance_score if (reco and hasattr(reco, 'compliance_score')) else "UNKNOWN"
     }
