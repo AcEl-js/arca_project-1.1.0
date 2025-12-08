@@ -88,7 +88,7 @@ def create_crew(api_key):
     
     # Use Gemini 1.5 Flash for best balance of speed, cost, and JSON instruction following
     llm = LLM(
-        model="gemini/gemini-1.5-flash",
+        model="gemini/gemini-2.5-flash-lite",
         temperature=0.1,  # Low temperature for strict adherence to formats
         api_key=api_key, 
     )
@@ -296,3 +296,4 @@ def run_arca_pipeline(new_regulation_text: str, user_id: str, date_of_law: str |
         "recommendation": reco.recommendation if reco else "Analysis completed.",
         "compliance_score": reco.compliance_score if reco and hasattr(reco, 'compliance_score') else "UNKNOWN"
     }
+
